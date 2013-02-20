@@ -41,6 +41,14 @@ if !exists('g:inccomplete_appendslash')
     let g:inccomplete_appendslash = 0
 endif
 
+if !exists('g:clang_exec')
+    let g:clang_exec = 'clang'
+endif
+
+let s:filetype_to_lang = {'c': 'c', 'cpp': 'c++', 'objc': 'objective-c', 'objcpp': 'objective-c++' }
+let s:clang_default_include = {}
+let s:iswindows = has('win16') || has('win32') || has('win64') || has('win95') || has('win32unix')
+
 autocmd FileType c,cpp,objc,objcpp call s:ICInit()
 
 " maps <, ", / and \, sets 'omnifunc'
@@ -84,7 +92,7 @@ function! ICCompleteInc(bracket)
     endif
 
     if a:bracket == '/' || a:bracket == '\'
-        if getline('.') =~ '^\s*#\s*include\s*["<][^">]*$'
+        if getline('.') =~ '^\s*#\s*include\s*["<][^">]*'
             return a:bracket.l:keycomp
         endif
     endif
@@ -284,6 +292,7 @@ function! s:ICGetList(user, base)
 
     " prepare list of directories
     let l:pathlst = s:ICAddNoDupPaths(split(&path, ','), s:ICGetClangIncludes())
+    let l:pathlst = s:ICAddNoDupPaths(l:pathlst, s:ICGetClangDefaultIncludes())
     let l:pathlst = s:ICAddNoDupPaths(l:pathlst,
                                     \ s:ICGetSubDirs(l:pathlst, a:base))
     call reverse(sort(l:pathlst))
@@ -378,6 +387,53 @@ function! s:ICFindIncludes(user, pathlst)
     return l:result
 endfunction
 
+" retrieves clang's default include directories
+function! s:ICGetClangDefaultIncludes()
+    let l:lang = get(s:filetype_to_lang, &filetype, '')
+    if l:lang == ''
+        "unknown language
+        return []
+    endif
+
+    let l:result = get(s:clang_default_include, l:lang, [''])
+
+    if l:result != ['']
+        "result was cached - return it
+        return l:result
+    endif
+
+    let l:result = []
+
+    if executable(g:clang_exec)
+        let l:all_options = g:clang_user_options . ' ' . b:clang_user_options
+        let l:stdlib = matchstr(l:all_options, '\C\M^\(\.\*\s\)\?\zs-stdlib=\S\+')
+        let l:cmd  = 'echo | ' . g:clang_exec . ' -v -E ' . l:stdlib . ' -x ' . l:lang . ' -'
+
+        let l:out = split(system(l:cmd), "\n")
+
+        while !empty(l:out) && l:out[0] !~ '^#include <...>'
+            let l:out = l:out[1:]
+        endwhile
+        if !empty(l:out)
+            let l:out = l:out[1:]
+        endif
+
+        while !empty(l:out) && l:out[0] !~ '^End of search list.$'
+            let l:inc_path = substitute(l:out[0], '^\s*', '', '')
+            let l:inc_path = substitute(l:inc_path, '\s.*$', '', '')
+            let l:inc_path = fnamemodify(l:inc_path, ':p')
+            let l:inc_path = substitute(l:inc_path, '\', '/', 'g')
+            if isdirectory(l:inc_path)
+                call add(l:result, l:inc_path)
+            endif
+            let l:out = l:out[1:]
+        endwhile
+    endif
+
+    let s:clang_default_include[l:lang] = l:result
+    return l:result
+endfunction
+
 " retrieves include directories from b:clang_user_options and
 " g:clang_user_options
 function! s:ICGetClangIncludes()
@@ -416,15 +472,11 @@ endfunction
 
 " returns list of three elements: [name_pos, slash_for_regexps, ordinary_slash]
 function! s:ICParsePath(path)
-    let l:iswindows = has('win16') || has('win32') || has('win64') ||
-                    \ has('win95') || has('win32unix')
-
     " determine type of slash
-    let l:path = a:path
     let l:pos = strridx(a:path, '/')
     let l:sl1 = '/'
     let l:sl2 = '/'
-    if l:iswindows && (empty(a:path) || l:pos < 0)
+    if s:iswindows && (empty(a:path) || l:pos < 0)
         let l:pos = strridx(a:path, '\')
         let l:sl1 = '\\\\'
         let l:sl2 = '\'
